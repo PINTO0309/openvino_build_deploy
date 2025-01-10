@@ -59,18 +59,5 @@
     "sharp": "^0.33.5"
   },
   "keywords": [],
-  "author": "Mikołaj Roszczyk <mikolaj.roszczyk@intel.com>",
-  "contributors": [
-    {
-      "name": "Adrian Boguszewski",
-      "email": "adrian.boguszewski@intel.com"
-    },
-    {
-      "name": "Antonio Martinez",
-      "email": "jose.antonio.martinez.torres@intel.com"
-    }
-  ],
-  "homepage": "https://github.com/openvinotoolkit/openvino_build_deploy",
-  "license": "Apache-2.0",
-  "description": "An application to present background blurring with OpenVINO"
+  "license": "Apache-2.0"
 }
