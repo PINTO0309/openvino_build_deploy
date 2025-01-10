@@ -13,7 +13,7 @@
         "to": "./libvips-cpp.so.42"
       }
     ],
-    "appId": "ai.openvino.hideyourmessbehind",
+    "appId": "yolov9_wholebody25",
     "mac": {
       "icon": "assets/icons/icon.png"
     },
