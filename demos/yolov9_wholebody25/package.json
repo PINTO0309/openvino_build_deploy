@@ -1,6 +1,6 @@
 {
-  "name": "hide-your-mess-behind",
-  "version": "1.2.0",
+  "name": "yolov9_wholebody25",
+  "version": "1.0.0",
   "main": "src/main.js",
   "scripts": {
     "start": "electron . --no-sandbox",
