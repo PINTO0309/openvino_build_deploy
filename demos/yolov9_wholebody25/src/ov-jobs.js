@@ -29,7 +29,7 @@ const watermarkCache = new Map();
 let baseWatermark = null;
 let isInitialized = false;
 
-const inputSize = { w: 256, h: 256 };
+const inputSize = { w: 640, h: 480 };
 let outputMask = null;
 
 const preprocessBuffer = new Float32Array(inputSize.w * inputSize.h * 3);
