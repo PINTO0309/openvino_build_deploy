@@ -157,7 +157,7 @@ async function preprocess(originalImg) {
 
     // Reuse existing buffer instead of creating new one
     for (let i = 0; i < inputImg.length; i++) {
-        preprocessBuffer[i] = inputImg[i] / 255;
+        preprocessBuffer[i] = inputImg[i];
     }
 
     const shape = [1, inputSize.w, inputSize.h, 3];
