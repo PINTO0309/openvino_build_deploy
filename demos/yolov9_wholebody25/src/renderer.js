@@ -60,11 +60,11 @@ async function processFrame() {
     const imageData = ctx.getImageData(0, 0, canvasElement.width, canvasElement.height);
 
     if (inferenceActive) {
-      let resultMask = await window.electronAPI.runModel(imageData, canvasElement.width, canvasElement.height, device);
-      let result = await window.electronAPI.blurImage(imageData, canvasElement.width, canvasElement.height);
-      let blurredImage = new ImageData(result.img, result.width, result.height);
+      let resultDetection = await window.electronAPI.runModel(imageData, canvasElement.width, canvasElement.height, device);
+      let result = await window.electronAPI.objectDetection(imageData, canvasElement.width, canvasElement.height);
+      let detectedImage = new ImageData(result.img, result.width, result.height);
 
-      processingTimes.push(resultMask.inferenceTime / 1000);
+      processingTimes.push(resultDetection.inferenceTime / 1000);
 
       if (processingTimes.length > 200) {
         processingTimes.shift();
@@ -72,7 +72,7 @@ async function processFrame() {
       const processingTime = (processingTimes.reduce((a, b) => a + b, 0) / processingTimes.length) * 1000;
       const fps = 1000 / processingTime;
 
-      ctx.putImageData(blurredImage, 0, 0);
+      ctx.putImageData(detectedImage, 0, 0);
 
       if (!streamingActive) return;
       processingTimeElement.innerText = `Inference time: ${processingTime.toFixed(1)}ms (${fps.toFixed(1)} FPS)`;
