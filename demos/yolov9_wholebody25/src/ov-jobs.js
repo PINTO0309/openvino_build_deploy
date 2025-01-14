@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-module.exports = { detectDevices, runModel, objectDetection }
+module.exports = { detectDevices, runModel, objectDetection };
 
 // Sharp settings
 sharp.cache(100);  // Increased cache size
@@ -23,97 +23,84 @@ if (core.getAvailableDevices().includes('CPU')) {
         "ENABLE_HYPER_THREADING": "YES"
     });
 }
+
 const ovModels = new Map(); // compiled models
 let model = null; // read model
 const watermarkCache = new Map();
 let baseWatermark = null;
 let isInitialized = false;
 
+// 推論する入力画像サイズ (640×480)
 const inputSize = { w: 640, h: 480 };
-let batchno_classid_score_x1y1x2y2 = null;
 
+// 推論結果を一時的に保持する配列 ([batchNo, classId, score, x1, y1, x2, y2] の配列)
+let batchno_classid_score_x1y1x2y2s = [];
+
+// バッファは毎回使い回す場合などに使う想定だが、ここでは単なる例示
 const preprocessBuffer = new Float32Array(inputSize.w * inputSize.h * 3);
 const normalizedBuffer = new Float32Array(inputSize.w * inputSize.h * 6);
+
+// InferRequest のキャッシュ (デバイスごとに使い回し)
 const inferRequests = new Map();
 
+
+//---------------------------------------------------------------------
+// デバイス一覧の取得
+//---------------------------------------------------------------------
 async function detectDevices() {
     return ["AUTO"].concat(core.getAvailableDevices());
 }
 
+//---------------------------------------------------------------------
+// モデルファイルのパスを取得
+//---------------------------------------------------------------------
 async function getModelPath() {
     if (fs.existsSync(path.join(__dirname, '../../app.asar'))){
         //if running compiled program
         return path.join(__dirname, "../../app.asar.unpacked/models/yolov9_n_wholebody25_post_0100_1x3x480x640.xml");
     } else {
         //if running npm start
-    return path.join(__dirname, "../models/yolov9_n_wholebody25_post_0100_1x3x480x640.xml");
+        return path.join(__dirname, "../models/yolov9_n_wholebody25_post_0100_1x3x480x640.xml");
     }
 }
 
+//---------------------------------------------------------------------
+// モデルの読み込みおよびコンパイル (デバイスごとにキャッシュ)
+//---------------------------------------------------------------------
 async function getModel(device) {
-    // if model not loaded
+    // まだモデルを readModel していない場合
     if (model == null) {
         const modelPath = await getModelPath();
         model = await core.readModel(modelPath);
     }
+    // 既に同デバイスでコンパイル済みなら再利用
+    if (ovModels.has(device)) return ovModels.get(device);
 
-    // if cached
-    if (ovModels.has(device)) return ovModels.get(device)
-
-    // compile and cache
+    // コンパイル → キャッシュ
     let compiledModel = await core.compileModel(model, device);
     ovModels.set(device, compiledModel);
-
     return compiledModel;
 }
 
-
-function normalizeArray(array) {
-    const throughput = 0.5;
-    let min = Infinity;
-    let max = -Infinity;
-
-    for (let i = 0; i < array.length; i++) {
-        const val = array[i];
-        if (val < min) min = val;
-        if (val > max) max = val;
-    }
-
-    if (max === min) {
-        normalizedBuffer.fill(0);
-        return normalizedBuffer;
-    }
-
-    for (let i = 0; i < array.length; i++) {
-        const coef = (array[i] - min) / (max - min);
-        normalizedBuffer[i] = coef > throughput ? 1 : 0;
-    }
-
-    return normalizedBuffer;
-}
-
-
+//---------------------------------------------------------------------
+// 推論前の前処理 (Sharp で 640×480 RGB画像を取得 → Float32 CHW(BGR) テンソルに変換)
+//---------------------------------------------------------------------
 async function preprocess(originalImg) {
     // 1) 画像を [H, W, 3] の形 (RGB) で取得
+    //    → 640×480 にリサイズ & αチャネル除去
     const inputImg = await originalImg
         .resize(inputSize.w, inputSize.h, { fit: 'fill' })
         .removeAlpha() // αチャネルを除去 → 3チャネル(RGB)
-        .raw()         // ピクセルデータをRGBA(→RGB)の生配列として取得
+        .raw()         // ピクセルデータを [R, G, B] の生配列として取得
         .toBuffer();
 
-    // 2) 出力バッファを [N, C, H, W] = [1, 3, height, width] サイズで用意
-    //    ここでは型を float32 (Float32Array) として用意する例
+    // 2) 出力バッファを [N, C, H, W] = [1, 3, height, width] サイズで用意 (Float32Array)
     const { w, h } = inputSize;
     const outChannels = 3;
     const outSize = 1 * outChannels * h * w;
     const preprocessBuffer = new Float32Array(outSize);
 
     // 3) HWC(RGB) → CHW(BGR) への変換
-    //    (row, col)ピクセルに対して:
-    //      inIndex  = (row * width + col) * 3        // [R, G, B]
-    //      outIndexB= 0 * (h*w) + (row * w) + col    // C=0 (B)
-    //      outIndexG= 1 * (h*w) + (row * w) + col    // C=1 (G)
-    //      outIndexR= 2 * (h*w) + (row * w) + col    // C=2 (R)
     for (let row = 0; row < h; row++) {
         for (let col = 0; col < w; col++) {
             const inIndex = (row * w + col) * 3;
@@ -122,7 +109,7 @@ async function preprocess(originalImg) {
             const G = inputImg[inIndex + 1];
             const B = inputImg[inIndex + 2];
 
-            // BGR の順に出力 (N=0 は省略)
+            // BGR の順に格納
             const outIndexB = 0 * (h*w) + row * w + col;
             const outIndexG = 1 * (h*w) + row * w + col;
             const outIndexR = 2 * (h*w) + row * w + col;
@@ -138,47 +125,44 @@ async function preprocess(originalImg) {
     return new ov.Tensor(ov.element.f32, shape, preprocessBuffer);
 }
 
+//---------------------------------------------------------------------
+// 推論結果の後処理 (出力テンサーを [batchNo, classId, score, x1, y1, x2, y2] の配列にまとめ、フィルタリング)
+//---------------------------------------------------------------------
 function postprocess(resultTensor) {
-    // outputData を 2次元配列に変換 (rows=N, cols=?)
-    // 例: 1推論に対して Nx7 個の検出結果が返る想定
-    //console.time('postprocess');
-    const dimD = 7; // 例: [batchNo, classId, score, x1, y1, x2, y2] の7次元と仮定
-    const rowCount = Math.floor(resultTensor.length / dimD);
-    const batchno_classid_score_x1y1x2y2s = [];
+    const data = resultTensor.data;
+    const dimD = 7; // [batchNo, classId, score, x1, y1, x2, y2] の7次元と想定
+    const rowCount = Math.floor(data.length / dimD);
 
-    const threshold = 0.35; // 検出スコアしきい値
-    const excludedIds = new Set([1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 22, 23]); // 検出除外するクラスID
+    // 閾値・除外クラス
+    const threshold = 0.35;
+    const excludedIds = new Set([1, 2, 3, 4, 5, 6, 8, 9, 10, 11, 12, 13, 14, 15, 22, 23]);
 
+    // 取得した推論結果をまとめる
+    const detected = [];
     for (let row = 0; row < rowCount; row++) {
         const startIdx = row * dimD;
-        // [batchNo, classId, score, x1, y1, x2, y2] として取り出す
-        batchno_classid_score_x1y1x2y2s.push([
-            resultTensor[startIdx + 0], // batchNo
-            resultTensor[startIdx + 1], // classId
-            resultTensor[startIdx + 2], // score
-            resultTensor[startIdx + 3], // x1
-            resultTensor[startIdx + 4], // y1
-            resultTensor[startIdx + 5], // x2
-            resultTensor[startIdx + 6]  // y2
-        ]);
+        const batchNo = data[startIdx + 0];
+        const classId = data[startIdx + 1];
+        const score   = data[startIdx + 2];
+        const x1      = data[startIdx + 3];
+        const y1      = data[startIdx + 4];
+        const x2      = data[startIdx + 5];
+        const y2      = data[startIdx + 6];
+        detected.push([batchNo, classId, score, x1, y1, x2, y2]);
     }
 
-    // スコアが threshold を超えるものだけフィルタ
-    const filteredData = batchno_classid_score_x1y1x2y2s.filter((row) => {
-        const score = row[2];
-        return score >= threshold;
-    });
+    // スコアがしきい値以上のものだけ
+    const filteredData = detected.filter(([b, cid, sc]) => sc >= threshold);
 
-    // excludedIds でフィルタ
-    const boxesData = filteredData.filter((row) => {
-        const classId = row[1];
-        return !excludedIds.has(classId);
-    });
+    // 除外クラスでさらにフィルタ
+    const boxesData = filteredData.filter(([b, cid]) => !excludedIds.has(cid));
 
-    //console.timeEnd('postprocess');
     return boxesData;
 }
 
+//---------------------------------------------------------------------
+// InferRequest の取得 (デバイスごとにキャッシュ)
+//---------------------------------------------------------------------
 async function getInferRequest(device) {
     if (inferRequests.has(device)) {
         return inferRequests.get(device);
@@ -189,26 +173,34 @@ async function getInferRequest(device) {
     return inferRequest;
 }
 
-
+//---------------------------------------------------------------------
+// 画像データ (raw形式) を入力として推論を実行する
+//---------------------------------------------------------------------
 async function runModel(img, width, height, device) {
-    const originalImg = sharp(img.data, { raw: { channels: 4, width, height } });
+    // Sharp で "width×height (4チャネル)" の生画像を取り込み
+    const originalImg = sharp(img.data, {
+        raw: {
+            channels: 4,
+            width: width,
+            height: height
+        }
+    });
+
+    // 前処理 → 推論
     const inputTensor = await preprocess(originalImg);
     const inferRequest = await getInferRequest(device);
-    const startTime = performance.now();
 
-    //console.time('inference');
+    const startTime = performance.now();
     inferRequest.setInputTensor(inputTensor);
     inferRequest.infer();
     const outputLayer = (await getModel(device)).outputs[0];
     const resultTensor = inferRequest.getTensor(outputLayer);
-    //console.timeEnd('inference');
-
-    console.log('det: ', resultTensor.data);
     const stopTime = performance.now();
-    const inferenceTime = (stopTime - startTime);
 
+    const inferenceTime = (stopTime - startTime);
     console.log(`##### inferenceTime: ${inferenceTime} ms`);
 
+    // 後処理 → 結果をグローバル変数に保存 (本来は適宜 return などで渡すのが望ましい)
     batchno_classid_score_x1y1x2y2s = postprocess(resultTensor);
 
     return {
@@ -218,8 +210,12 @@ async function runModel(img, width, height, device) {
     };
 }
 
+//---------------------------------------------------------------------
+// バウンディングボックスを描画した画像を生成して返す
+//---------------------------------------------------------------------
 async function objectDetection(image, width, height) {
-    // 検出結果が null あるいは空なら元画像のみ返す
+    // 推論結果が空ならそのまま返す
+    // console.log('det: ', batchno_classid_score_x1y1x2y2s);
     if (!batchno_classid_score_x1y1x2y2s || batchno_classid_score_x1y1x2y2s.length === 0) {
         return {
             img: image.data,
@@ -228,10 +224,9 @@ async function objectDetection(image, width, height) {
         };
     }
 
-    console.log('det: ', batchno_classid_score_x1y1x2y2s);
+    // console.log('det: ', batchno_classid_score_x1y1x2y2s);
 
-    // classId が 25 クラスある想定
-    // 好みの配色を 25 個セットしておく (例として使用)
+    // クラスIDが 25 クラスある想定で色を準備 (任意)
     const colorPalette = [
         '#e6194b', '#3cb44b', '#ffe119', '#0082c8', '#f58231',
         '#911eb4', '#46f0f0', '#f032e6', '#d2f53c', '#fabebe',
@@ -241,79 +236,100 @@ async function objectDetection(image, width, height) {
     ];
 
     try {
-        // ---- (1) バウンディングボックス用 SVG を作成 ----
-        const strokeWidth = 2; // 線の太さなど好みで変更
+        // [★変更点★] 推論サイズ(640×480) → 元画像サイズ(width×height) への拡大率
+        const scaleX = width / inputSize.w;   // 幅方向
+        const scaleY = height / inputSize.h;  // 高さ方向
 
-        // <rect> 要素の配列を作成
+        const strokeWidth = 2; // 枠線の太さ
+
+        // <rect> 要素を生成 (スケーリング適用)
         const rects = batchno_classid_score_x1y1x2y2s.map(det => {
             const [batchNo, classId, score, x1, y1, x2, y2] = det;
 
-            // classId が 25 以上の可能性があるなら、念のため mod を取る
+            // 640×480 での座標 → 元サイズにスケーリング
+            const rx1 = x1 * scaleX;
+            const ry1 = y1 * scaleY;
+            const rx2 = x2 * scaleX;
+            const ry2 = y2 * scaleY;
+
+            const w = rx2 - rx1;
+            const h = ry2 - ry1;
+
+            // クラスIDが 25 以上なら mod を取る (万一想定外クラスが検出された場合に対応)
             const strokeColor = colorPalette[classId % colorPalette.length];
 
-            // 幅と高さ
-            const w = x2 - x1;
-            const h = y2 - y1;
-
-            // 描画する <rect> と、あわせて文字情報を描画 (例: score 表示)
             return `
                 <rect
-                    x="${x1}"
-                    y="${y1}"
+                    x="${rx1}"
+                    y="${ry1}"
                     width="${w}"
                     height="${h}"
                     fill="none"
                     stroke="${strokeColor}"
                     stroke-width="${strokeWidth}"
                 />
-                <!-- score やクラスIDなどを表示したい場合は <text> 要素も追加 -->
+                <!-- (score やクラスIDなどを表示したい場合) -->
                 <text
-                    x="${x1}"
-                    y="${Math.max(y1 - 5, 0)}"  /* 矩形の上あたりに表示 */
+                    x="${rx1}"
+                    y="${Math.max(ry1 - 5, 0)}"
                     fill="${strokeColor}"
                     font-size="16"
                     font-weight="bold"
-                    stroke="#000"         /* 文字のフチ取り */
+                    stroke="#000"
                     stroke-width="0.5"
                     paint-order="stroke"
                 >
                     class: ${classId}, score: ${score.toFixed(2)}
                 </text>
-                `;
+            `;
         }).join('');
 
-        // SVG 全体を文字列で定義
+        // 全体の SVG を文字列で作成
         const svgOverlay = `
             <svg
-            width="${width}"
-            height="${height}"
-            viewBox="0 0 ${width} ${height}"
-            xmlns="http://www.w3.org/2000/svg"
+                width="${width}"
+                height="${height}"
+                viewBox="0 0 ${width} ${height}"
+                xmlns="http://www.w3.org/2000/svg"
             >
-            ${rects}
+                ${rects}
             </svg>
         `;
 
-        // ---- (2) Sharp で元画像に SVG を合成 ----
+        // Sharp で元画像(4チャネル, width×height)に SVG を合成
         const imageWithBoxes = await sharp(image.data, {
             raw: {
-            channels: 4,
-            width: width,
-            height: height
+                channels: 4,
+                width: width,
+                height: height
             },
             limitInputPixels: false
         })
-            .composite([
+        .composite([
             {
                 input: Buffer.from(svgOverlay),
                 top: 0,
                 left: 0
             }
-            ])
-            .raw()
-            .toBuffer();
+        ])
+        .raw()
+        .toBuffer();
 
-        // 出力用に Uint8ClampedArray に変換
+        // Debug用.png出力
+        await sharp(imageWithBoxes, {
+            raw: {
+                channels: 4,
+                width,
+                height
+            }
+        })
+        .png()
+        .toFile(path.join(__dirname, 'debug_output.png'))
+        .catch(err => {
+            console.error('Failed to save debug_output.png:', err);
+        });
+
+        // 出力用に Uint8ClampedArray を返す
         return {
             img: new Uint8ClampedArray(imageWithBoxes),
             width,

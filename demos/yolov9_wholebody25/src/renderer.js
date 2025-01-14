@@ -96,8 +96,8 @@ async function processFrame() {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
           deviceId: deviceId,
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
+          width: { ideal: 640 },
+          height: { ideal: 480 }
         },
         audio: false
       });

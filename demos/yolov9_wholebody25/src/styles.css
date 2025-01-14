@@ -40,7 +40,6 @@ body {
   height: auto;
   background: black;
   display: block;
-  transform: scaleX(-1);
 }
 
 #controlPanelContainer {
